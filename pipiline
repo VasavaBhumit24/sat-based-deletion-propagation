@@ -1,0 +1,431 @@
+def sat_dp_ss_pipeline(query, database_instance, target_proj, w_tuple=1):
+    import timeit
+    from pysat.examples.rc2 import RC2
+
+    solve_start_time = timeit.default_timer()
+
+    # -------------------------
+    # 1. Prepare Data
+    # -------------------------
+    witnesses_raw, projections_raw = prepare_data(query, database_instance)
+
+    if not witnesses_raw or not projections_raw:
+        return {
+            'DP_SS_Deleted_Tuples_Count': 0,
+            'Deleted_Tuples': [],
+            'Solve_Time': 0,
+            'Total_Witnesses_Encoded': 0,
+            'Target': target_proj
+        }
+
+    # -------------------------
+    # 2. Target Witness Extraction
+    # -------------------------
+    target_witness_keys = projections_raw.get(target_proj, [])
+
+    if not target_witness_keys:
+        print(f"⚠️ Target {target_proj} not found or has no witnesses.")
+        return {
+            'DP_SS_Deleted_Tuples_Count': 0,
+            'Deleted_Tuples': [],
+            'Solve_Time': 0,
+            'Total_Witnesses_Encoded': 0,
+            'Target': target_proj
+        }
+
+    # -------------------------
+    # 3. Build Local Witness Map
+    # -------------------------
+    witness_map_local = {}
+    counter = 0
+
+    for raw_w_key in target_witness_keys:
+        w_name = f"W_{counter}"
+        counter += 1
+
+        tuple_names = [
+            t for t in raw_w_key.split('-')
+            if t.startswith("T_")
+        ]
+
+        witness_map_local[w_name] = tuple_names
+
+    # -------------------------
+    # 4. Projection Map
+    # -------------------------
+    projection_map_local = {
+        target_proj: list(witness_map_local.keys())
+    }
+
+    # -------------------------
+    # 5. SAT Encoding
+    # -------------------------
+    encoder = SATEncoder()
+
+    encoder.add_dependency_constraints(
+        witness_map_local,
+        projection_map_local,
+        mode="dp_ss"
+    )
+
+    encoder.set_dp_ss_objective(
+        target_proj,
+        projection_map_local,
+        w_tuple=w_tuple
+    )
+
+    # -------------------------
+    # 6. Solve
+    # -------------------------
+    rc2 = RC2(encoder.wcnf)
+    model = rc2.compute()
+
+    solve_time = timeit.default_timer() - solve_start_time
+
+    if model is None:
+        return {
+            'DP_SS_Deleted_Tuples_Count': -1,
+            'Deleted_Tuples': [],
+            'Solve_Time': solve_time,
+            'Total_Witnesses_Encoded': len(witness_map_local),
+            'Target': target_proj
+        }
+
+    # -------------------------
+    # 7. Extract Deleted Tuples
+    # -------------------------
+    deleted_tuples = []
+    model_set = set(model)
+
+    for name, var_id in encoder.var_map.items():
+        if name.startswith("T_") and -var_id in model_set:
+            deleted_tuples.append(name)
+
+    # -------------------------
+    # 8. Return
+    # -------------------------
+    return {
+        'DP_SS_Deleted_Tuples_Count': len(deleted_tuples),
+        'Deleted_Tuples': deleted_tuples,
+        'Solve_Time': solve_time,
+        'Total_Witnesses_Encoded': len(witness_map_local),
+        'Target': target_proj
+    }
+    #dp-vs pipeline
+    def sat_dp_vs_pipeline(query, database_instance, target_proj, w_projection=1):
+
+    import timeit
+    from pysat.examples.rc2 import RC2
+
+    results = {}
+    solve_start_time = timeit.default_timer()
+
+    # 1. Prepare Data
+    witnesses_raw, projections_raw = prepare_data(query, database_instance)
+
+    if not witnesses_raw or not projections_raw:
+        return {'DP_VS_Deleted_Tuples_Count': 0, 'Solve_Time': 0, 'Deleted_Projections': [], 'Total_Witnesses_Encoded': 0, 'Total_Projections_Encoded': 0}
+
+    # 2. Map building
+    witness_map_for_encoder = {}
+    projection_map_for_encoder = {}
+    witness_name_map = {}
+    counter = 0
+
+    for proj_key, raw_witness_keys in projections_raw.items():
+        projection_map_for_encoder[proj_key] = []
+        for raw_w_key in raw_witness_keys:
+            if raw_w_key not in witness_name_map:
+                w_name = f"W_{counter}"
+                witness_name_map[raw_w_key] = w_name
+                counter += 1
+                # Extract tuple names
+                tuple_names = [t for t in raw_w_key.split('-') if t.startswith("T_")]
+                witness_map_for_encoder[w_name] = tuple_names
+            else:
+                w_name = witness_name_map[raw_w_key]
+            projection_map_for_encoder[proj_key].append(w_name)
+
+    # 3. SAT Encoding
+    encoder = SATEncoder()
+
+    # Mode "dp_vs" must implement: P -> OR(W), W -> AND(T), and ¬W -> OR(¬T)
+    encoder.add_dependency_constraints(
+        witness_map_for_encoder,
+        projection_map_for_encoder,
+        mode="dp_vs"
+    )
+
+    # 4. Objective: Target = False, Others = True (Soft)
+    encoder.set_dp_vs_objective(
+        target_proj,
+        list(projection_map_for_encoder.keys()),
+        w_projection=w_projection
+    )
+
+    # 5. Solve
+    rc2 = RC2(encoder.wcnf)
+    model = rc2.compute()
+    solve_time = timeit.default_timer() - solve_start_time
+
+    if model is None:
+        return {'DP_VS_Deleted_Tuples_Count': -1, 'Solve_Time': solve_time, 'Deleted_Projections': [], 'Total_Witnesses_Encoded': len(witness_map_for_encoder), 'Total_Projections_Encoded': len(projection_map_for_encoder)}
+
+    # 6. Extraction (Crucial Fix)
+    deleted_projections = []
+    deleted_tuples = []
+    model_set = set(model)
+
+    for name, var_id in encoder.var_map.items():
+        # In RC2/WCNF: Negative variable = FALSE = DELETED
+        if -var_id in model_set:
+            if name.startswith("p-"):
+                deleted_projections.append(name)
+            elif name.startswith("T_"):
+                deleted_tuples.append(name)
+
+    # Ensure target is present
+    if target_proj not in deleted_projections:
+        deleted_projections.append(target_proj)
+
+    return {
+        'DP_VS_Deleted_Tuples_Count': len(deleted_tuples),
+        'Deleted_Projections': deleted_projections, # Return the list, not its length
+        'Solve_Time': solve_time,
+        'Total_Witnesses_Encoded': len(witness_map_for_encoder),
+        'Total_Projections_Encoded': len(projection_map_for_encoder)
+    }
+    #swp pipeline
+    from pysat.examples.rc2 import RC2
+
+def sat_swp_pipeline(query, database_instance):
+
+    import timeit
+
+    results = {}
+    tuples_to_keep = set()
+    encoders = []
+
+    all_witness_maps = []
+    all_projection_maps = []
+    stats = []
+
+    connected_components = get_existential_cc(query)
+
+    solve_start_time = timeit.default_timer()
+
+    for cc in connected_components:
+
+        # -------------------------
+        # Prepare SAT structures
+        # -------------------------
+        witness_map, projection_map, component_projections = \
+            _prepare_sat_problem_for_component(query, database_instance, cc)
+
+        if not witness_map or not projection_map:
+            continue
+
+        all_witness_maps.append(witness_map)
+        all_projection_maps.append(projection_map)
+
+        # -------------------------
+        # Build SAT model
+        # -------------------------
+        encoder = SATEncoder()
+
+        encoder.add_dependency_constraints(
+            witness_map,
+            projection_map,
+            mode="swp"
+        )
+
+        encoder.set_swp_objective(projection_map, witness_map)
+
+        # -------------------------
+        # Solve
+        # -------------------------
+        rc2 = RC2(encoder.wcnf)
+
+        comp_start = timeit.default_timer()
+        model = rc2.compute()
+        comp_end = timeit.default_timer()
+
+        if model is None:
+            continue
+
+        model_set = set(model)   # ✅ faster lookup
+        encoders.append((encoder, model))
+
+        # -------------------------
+        # Extract KEPT tuples
+        # -------------------------
+        for name, var in encoder.var_map.items():
+            if name.startswith("T_") and var in model_set:
+                tuples_to_keep.add(name)
+
+        # -------------------------
+        # Stats
+        # -------------------------
+        stats.append({
+            "witnesses": len(witness_map),
+            "projections": len(projection_map),
+            "solve_time": comp_end - comp_start
+        })
+
+    solve_end_time = timeit.default_timer()
+
+    # -------------------------
+    # Final Results
+    # -------------------------
+    results["Kept Tuples"] = sorted(tuples_to_keep)
+    results["#Kept Tuples"] = len(tuples_to_keep)
+    results["Solve Time"] = solve_end_time - solve_start_time
+
+    results["encoders"] = encoders
+    results["witness_maps"] = all_witness_maps
+    results["projection_maps"] = all_projection_maps
+    results["stats"] = stats
+
+    return results
+    #Resilince pipeline
+    import timeit
+from pysat.examples.rc2 import RC2
+
+def sat_resilience_pipeline(query, database_instance, w_tuple=1):
+    """
+    RESILIENCE (Boolean Query):
+
+    Goal:
+        Minimum number of tuple deletions required to make the query FALSE.
+
+    Encoding:
+        - Witness: w ↔ (t1 ∧ t2 ∧ ... ∧ tk)
+        - HARD: all witnesses must be FALSE
+        - SOFT: minimize tuple deletions
+
+    Args:
+        query: Query object
+        database_instance: database
+        w_tuple: weight for tuple preservation
+
+    Returns:
+        dict with results
+    """
+
+    solve_start_time = timeit.default_timer()
+    tuples_deleted = set()
+    results = {}
+
+    print(f"\n--- Resilience Pipeline | w_tuple: {w_tuple} ---")
+
+    # -------------------------
+    # 1. Prepare data
+    # -------------------------
+    witnesses_raw, projections_raw = prepare_data(query, database_instance)
+
+    if not witnesses_raw:
+        print("No witnesses found.")
+        return {
+            'Resilience_Deleted_Tuples_Count': 0,
+            'Solve_Time': timeit.default_timer() - solve_start_time,
+            'Deleted_Tuples': [],
+            'Total_Witnesses_Encoded': 0
+        }
+
+    # -------------------------
+    # 2. Build witness map
+    # -------------------------
+    witness_map = {}
+    witness_name_map = {}
+    counter = 0
+
+    for witness_list in projections_raw.values():
+        for w_key in witness_list:
+
+            if w_key not in witness_name_map:
+                w_name = f"W_{counter}"
+                witness_name_map[w_key] = w_name
+                counter += 1
+
+                # Extract tuple names
+                tuple_names = w_key[2:].split('-')
+                witness_map[w_name] = tuple_names
+
+    print(f"  Encoded {len(witness_map)} witnesses")
+
+    # -------------------------
+    # 3. Initialize encoder
+    # -------------------------
+    encoder = SATEncoder()
+
+    # -------------------------
+    # 4. Add witness constraints
+    # -------------------------
+    for w_name, tuple_list in witness_map.items():
+        w_var = encoder.var(w_name)
+        t_vars = [encoder.var(t) for t in tuple_list]
+
+        # w → t_i
+        for t in t_vars:
+            encoder.add_clause([-w_var, t])
+
+        # (t1 ∧ t2 ∧ ...) → w
+        encoder.add_clause([-t for t in t_vars] + [w_var])
+
+    # -------------------------
+    # 5. HARD: kill all witnesses
+    # -------------------------
+    for w_name in witness_map:
+        encoder.add_clause([-encoder.var(w_name)])
+
+    # -------------------------
+    # 6. SOFT: minimize deletions
+    # -------------------------
+    for name, var_id in encoder.var_map.items():
+        if name.startswith("T_"):
+            encoder.add_soft([var_id], weight=w_tuple)
+
+    # -------------------------
+    # 7. Solve
+    # -------------------------
+    rc2 = RC2(encoder.wcnf)
+    model = rc2.compute()
+
+    if model is None:
+        print("Solver returned no model.")
+        return {
+            'Resilience_Deleted_Tuples_Count': -1,
+            'Solve_Time': timeit.default_timer() - solve_start_time,
+            'Deleted_Tuples': [],
+            'Total_Witnesses_Encoded': len(witness_map)
+        }
+
+    # -------------------------
+    # 8. Extract deleted tuples
+    # -------------------------
+    for lit in model:
+        if lit < 0:
+            name = encoder.reverse_map.get(-lit, "")
+            if name.startswith("T_"):
+                tuples_deleted.add(name)
+
+    # -------------------------
+    # 9. Consistency check
+    # -------------------------
+    all_tuples = [n for n in encoder.var_map if n.startswith("T_")]
+    print(f"  Checking consistency for {len(all_tuples)} tuples...")
+    encoder.check_encode_decode_consistency(all_tuples)
+
+    solve_end_time = timeit.default_timer()
+
+    # -------------------------
+    # 10. Return results
+    # -------------------------
+    results = {
+        'Resilience_Deleted_Tuples_Count': len(tuples_deleted),
+        'Solve_Time': solve_end_time - solve_start_time,
+        'Deleted_Tuples': list(tuples_deleted),
+        'Total_Witnesses_Encoded': len(witness_map)
+    }
+
+    return results
