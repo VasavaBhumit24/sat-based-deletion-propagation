@@ -1,0 +1,26 @@
+class Query:
+
+    def __init__(self, name, head_vars, query_body, constants= None):
+        '''
+        name: str
+        head_vars: list of str
+        query_body: list of tuple where each tuple is a relation name and a list of variables
+        '''
+        self.name = name
+        self.head_vars = head_vars
+        self.query_body = query_body
+        self.constants = constants
+
+    def __str__(self):
+        return self.name + "(" + ",".join(self.head_vars) + ") :- " + ", ".join([rel + "(" + ",".join(vars) + ")" for rel, vars in self.query_body])
+
+    def __repr__(self):
+        return self.__str__()
+queries = {
+    'rsa': Query('rsa', ['x'], [('R', ['x', 'y']), ('S', ['x', 'z']), ('A', ['x'])]),
+    'hc-star-3': Query('hc-star-3', ['x'], [('A', ['x']), ('R', ['x', 'a']), ('S', ['x', 'b']), ('T', ['x', 'c'])]),
+    'hc-star-5': Query('hc-star-5', ['x'], [('A', ['x']), ('R', ['x', 'a']), ('S', ['x', 'b']), ('T', ['x', 'c']), ('U', ['x', 'd']), ('V', ['x', 'e'])]),
+    'rays-5': Query('rays-5', ['x'], [('R', ['x', 'a']), ('S', ['x', 'b']), ('T', ['x', 'c']), ('U', ['x', 'd']), ('V', ['x', 'e'])]),
+    'rays-3': Query('rays-3', ['x'], [('R', ['x', 'a']), ('S', ['x', 'b']), ('T', ['x', 'c'])]),
+    'hc-sj-ucq': Query('hc-sj-ucq', ['x'], [('R', ['x', 'a','b']), ('R', ['x', 'b','c']), ('R', ['x', 'c','a']), ('R', ['x', 'e','f']), ('R', ['x', 'f','g'])])
+}
